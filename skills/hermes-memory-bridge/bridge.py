@@ -17,116 +17,182 @@ WorkBuddy 与 Hermes Agent 双向记忆互通主引擎
     events            [limit]
     help
 """
+from __future__ import annotations
 
 import json
+import logging
 import sys
 import textwrap
 from datetime import datetime
+from pathlib import Path
 
-from config import HERMES_DB
-from memory_writer import read_shared_events as read_bridge_events, read_workbuddy_log
-from queries import (
-    get_recent_sessions,
-    get_session_messages,
-    get_session_stats,
-    read_hermes_memory,
-    search_fts,
-    search_messages,
-)
-from sync import (
-    read_bridge_status,
-    search_both_memories,
-    sync_hermes_to_workbuddy_context,
-    sync_workbuddy_to_hermes,
-)
+from config import _get_logger, logger
+
+logger = _get_logger("bridge")
 
 
-def cmd_sync_to_hermes(args: list) -> None:
-    """同步 WorkBuddy 工作到 Hermes"""
+def cmd_sync_to_hermes(args: list) -> bool:
+    """同步 WorkBuddy 工作到 Hermes，返回是否成功"""
+    from sync import sync_workbuddy_to_hermes
+
     summary = args[0] if args else ""
     work_type = args[1] if len(args) > 1 else "task"
     tags = args[2:] if len(args) > 2 else []
 
     if not summary:
-        print("用法: sync_to_hermes <summary> [work_type] [tags...]")
-        return
+        print("用法: sync_to_hermes <summary> [work_type] [tags...]", file=sys.stderr)
+        return False
 
-    result = sync_workbuddy_to_hermes(summary, work_type, tags)
-    print(f"✅ 已同步到 Hermes")
-    print(f"   记忆条目: {result['entry'][:80]}...")
-    print(f"   日志路径: {result['log_path']}")
+    try:
+        result = sync_workbuddy_to_hermes(summary, work_type, tags)
+    except Exception as e:
+        logger.error(f"同步失败: {e}")
+        print(f"❌ 同步失败: {e}")
+        return False
+
+    if result["status"] in ("synced", "partial"):
+        icon = "✅" if result["status"] == "synced" else "⚠️"
+        print(f"{icon} 已同步到 Hermes（{result['status']}）")
+        if result.get("entry"):
+            print(f"   记忆: {result['entry'][:80]}...")
+        if result.get("log_path"):
+            print(f"   日志: {result['log_path']}")
+        return True
+    else:
+        print(f"❌ 同步失败（全部写入操作均未成功）")
+        return False
 
 
-def cmd_sync_from_hermes(args: list) -> None:
+def cmd_sync_from_hermes(args: list) -> bool:
     """拉取 Hermes 最新上下文到 WorkBuddy"""
+    from sync import sync_hermes_to_workbuddy_context
+
     days = int(args[0]) if args else 7
-    result = sync_hermes_to_workbuddy_context(days=days)
-    print(result["summary_text"])
+    try:
+        result = sync_hermes_to_workbuddy_context(days=days)
+        print(result["summary_text"])
+        return True
+    except Exception as e:
+        logger.error(f"拉取 Hermes 上下文失败: {e}")
+        print(f"❌ 拉取失败: {e}")
+        return False
 
 
-def cmd_search(args: list) -> None:
+def cmd_search(args: list) -> bool:
     """跨 WorkBuddy + Hermes 全文搜索"""
+    from sync import search_both_memories
+
     keyword = args[0] if args else ""
     days = int(args[1]) if len(args) > 1 else 30
 
     if not keyword:
-        print("用法: search <keyword> [days]")
-        return
+        print("用法: search <keyword> [days]", file=sys.stderr)
+        return False
 
-    results = search_both_memories(keyword, days=days)
+    try:
+        results = search_both_memories(keyword, days=days)
+    except Exception as e:
+        logger.error(f"搜索失败: {e}")
+        print(f"❌ 搜索失败: {e}")
+        return False
+
     _print_search_results(results, keyword)
+    return True
 
 
-def cmd_status(args: list) -> None:
+def cmd_status(args: list) -> bool:
     """桥接状态总览"""
-    status = read_bridge_status()
+    from sync import read_bridge_status
+
+    try:
+        status = read_bridge_status()
+    except Exception as e:
+        logger.error(f"读取状态失败: {e}")
+        print(f"❌ 读取状态失败: {e}")
+        return False
+
     print("=" * 48)
     print("  Hermes-Memory-Bridge 状态总览")
     print("=" * 48)
     print(f"  数据库:      {'✅ 存在' if status['db_exists'] else '❌ 不存在'}")
+    print(f"  WorkBuddy 记忆: {status.get('workbuddy_memory_dir') or '（未找到）'}")
     print(f"  记忆文件:    {', '.join(status['hermes_memory_files']) or '（暂无）'}")
     print(f"  共用文件:    {', '.join(status['shared_files']) or '（暂无）'}")
     print(f"  近期事件:    {len(status['recent_events'])} 条")
     print("=" * 48)
 
     for ev in status["recent_events"][-5:]:
-        print(f"  [{ev['timestamp'][:16]}] {ev['type']}: {str(ev)[:60]}")
+        ts = ev.get("timestamp", "")[:16]
+        etype = ev.get("type", "")
+        # 去除 timestamp 字段避免重复显示
+        ev_clean = {k: v for k, v in ev.items() if k != "timestamp"}
+        info = json.dumps(ev_clean, ensure_ascii=False)[:60]
+        print(f"  [{ts}] {etype}: {info}")
+    return True
 
 
-def cmd_stats(args: list) -> None:
+def cmd_stats(args: list) -> bool:
     """Hermes 使用统计"""
+    from queries import get_session_stats
+
     days = int(args[0]) if args else 30
-    stats = get_session_stats(days=days)
+    try:
+        stats = get_session_stats(days=days)
+    except Exception as e:
+        logger.error(f"获取统计失败: {e}")
+        print(f"❌ 获取统计失败: {e}")
+        return False
+
     print(f"📊 Hermes 近 {days} 天统计")
     print(f"   会话数:   {stats.get('total_sessions', 0)}")
     print(f"   消息数:   {stats.get('total_messages', 0)}")
     print(f"   Token数: {stats.get('total_tokens', 0):,}")
     print(f"   估算费用: ${stats.get('estimated_cost_usd', 0):.4f}")
+    return True
 
 
-def cmd_sessions(args: list) -> None:
+def cmd_sessions(args: list) -> bool:
     """列出最近会话"""
+    from queries import get_recent_sessions
+
     days = int(args[0]) if args else 7
     limit = int(args[1]) if len(args) > 1 else 10
-    sessions = get_recent_sessions(days=days, limit=limit)
+
+    try:
+        sessions = get_recent_sessions(days=days, limit=limit)
+    except Exception as e:
+        logger.error(f"获取会话列表失败: {e}")
+        print(f"❌ 获取会话失败: {e}")
+        return False
 
     if not sessions:
         print(f"近 {days} 天无会话记录")
-        return
+        return True
 
     print(f"📋 近 {days} 天会话（共 {len(sessions)} 条）")
     for s in sessions:
-        ts = datetime.fromtimestamp(s["started_at"]).strftime("%m-%d %H:%M")
-        title = s.get("title") or s["source"] or "无标题"
+        try:
+            ts = datetime.fromtimestamp(s["started_at"]).strftime("%m-%d %H:%M")
+        except (ValueError, KeyError, TypeError):
+            ts = "??-?? ??:??"
+        title = s.get("title") or s.get("source") or "无标题"
         msgs = s.get("message_count", 0)
         cost = s.get("estimated_cost_usd") or 0
         print(f"  [{ts}] {title} | {msgs}条消息 | ${cost:.4f}")
+    return True
 
 
-def cmd_memory(args: list) -> None:
+def cmd_memory(args: list) -> bool:
     """读取 Hermes 记忆文件"""
+    from queries import read_hermes_memory
+
     target = args[0] if args else "memory"
-    mem = read_hermes_memory()
+    try:
+        mem = read_hermes_memory()
+    except Exception as e:
+        logger.error(f"读取 Hermes 记忆失败: {e}")
+        print(f"❌ 读取失败: {e}")
+        return False
 
     key = "MEMORY.md" if target == "memory" else "USER.md"
     data = mem.get(key, {})
@@ -136,24 +202,33 @@ def cmd_memory(args: list) -> None:
     print("-" * 48)
     if not entries:
         print("  （记忆为空）")
-    for i, entry in enumerate(entries, 1):
-        print(f"  [{i}] {entry[:300]}")
-        print()
+    else:
+        for i, entry in enumerate(entries, 1):
+            print(f"  [{i}] {entry[:300]}")
+            print()
+    return True
 
 
-def cmd_events(args: list) -> None:
+def cmd_events(args: list) -> bool:
     """读取桥接事件历史"""
+    from memory_writer import read_shared_events
+
     limit = int(args[0]) if args else 20
-    events = read_bridge_events(limit=limit)
+    try:
+        events = read_shared_events(limit=limit)
+    except Exception as e:
+        logger.error(f"读取事件历史失败: {e}")
+        print(f"❌ 读取失败: {e}")
+        return False
 
     print(f"🔗 桥接事件历史（共 {len(events)} 条）")
     for ev in events[-limit:]:
         ts = ev.get("timestamp", "")[:16]
         etype = ev.get("type", "")
-        # 去除 timestamp 字段以免重复显示
         ev_clean = {k: v for k, v in ev.items() if k != "timestamp"}
-        info = str(ev_clean)[:100]
+        info = json.dumps(ev_clean, ensure_ascii=False)[:100]
         print(f"  [{ts}] {etype}: {info}")
+    return True
 
 
 def _print_search_results(results: dict, keyword: str) -> None:
@@ -165,11 +240,14 @@ def _print_search_results(results: dict, keyword: str) -> None:
     if hermes:
         print(f"**Hermes 会话**（{len(hermes)} 条）")
         for r in hermes[:5]:
-            ts = (
-                datetime.fromtimestamp(r["timestamp"]).strftime("%m-%d %H:%M")
-                if isinstance(r.get("timestamp"), float)
-                else "?"
-            )
+            try:
+                ts = (
+                    datetime.fromtimestamp(r["timestamp"]).strftime("%m-%d %H:%M")
+                    if isinstance(r.get("timestamp"), float)
+                    else "?"
+                )
+            except (ValueError, TypeError):
+                ts = "?"
             role = r.get("role", "")
             content = (r.get("content") or "")[:120]
             print(f"  [{ts}] [{role}]: {content}...")
@@ -186,32 +264,61 @@ def _print_search_results(results: dict, keyword: str) -> None:
         print("**WorkBuddy 记忆文件**：无匹配结果")
 
 
-def main() -> None:
+def main() -> int:
+    """返回退出码：0=成功，1=失败"""
     if len(sys.argv) < 2 or sys.argv[1] == "help":
-        print(textwrap.dedent(cmd_sync_to_hermes.__doc__ or ""))
-        return
+        print(textwrap.dedent("""
+        hermes-memory-bridge v1.1.0
+        用法: python3 bridge.py <command> [args...]
+
+        命令:
+          sync_to_hermes   <summary> [work_type] [tags...]
+          sync_from_hermes [days]
+          search           <keyword> [days]
+          status
+          stats            [days]
+          sessions         [days] [limit]
+          memory           [memory|user]
+          events           [limit]
+
+        环境变量:
+          HERMES_HOME           Hermes 根目录（默认 ~/.hermes）
+          WORKBUDDY_HOME        WorkBuddy 根目录（默认 ~/WorkBuddy）
+          BRIDGE_LOG_LEVEL      DEBUG|INFO|WARNING|ERROR（默认 INFO）
+        """.strip()))
+        return 0
 
     cmd = sys.argv[1]
     args = sys.argv[2:]
 
-    commands = {
-        "sync_to_hermes": cmd_sync_to_hermes,
-        "sync_from_hermes": cmd_sync_from_hermes,
-        "search": cmd_search,
-        "status": cmd_status,
-        "stats": cmd_stats,
-        "sessions": cmd_sessions,
-        "memory": cmd_memory,
-        "events": cmd_events,
+    commands: dict[str, tuple] = {
+        "sync_to_hermes":   (cmd_sync_to_hermes,   "同步工作到 Hermes"),
+        "sync_from_hermes": (cmd_sync_from_hermes, "拉取 Hermes 上下文"),
+        "search":           (cmd_search,           "跨系统搜索"),
+        "status":          (cmd_status,            "桥接状态"),
+        "stats":           (cmd_stats,             "Hermes 统计"),
+        "sessions":        (cmd_sessions,           "会话列表"),
+        "memory":          (cmd_memory,             "读取记忆"),
+        "events":          (cmd_events,             "事件历史"),
     }
 
     if cmd not in commands:
-        print(f"未知命令: {cmd}")
-        print(f"可用命令: {', '.join(commands)}")
-        return
+        print(f"未知命令: {cmd}", file=sys.stderr)
+        print(f"可用命令: {', '.join(commands)}", file=sys.stderr)
+        return 1
 
-    commands[cmd](args)
+    handler, description = commands[cmd]
+    logger.info(f"执行命令: {cmd} {args}")
+
+    try:
+        success = handler(args)
+    except Exception as e:
+        logger.exception(f"命令 {cmd} 异常: {e}")
+        print(f"❌ 命令执行异常: {e}", file=sys.stderr)
+        return 1
+
+    return 0 if success else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
