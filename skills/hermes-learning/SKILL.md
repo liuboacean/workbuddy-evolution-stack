@@ -2,6 +2,7 @@
 name: hermes-learning
 description: Hermes 学习材料同步技能。从 Hermes Agent 获取自我更新后的学习材料，帮助 WorkBuddy 进行自我优化。支持 evolution.db 持久化、概念关联、双向反馈闭环。
 trigger_words: 学习hermes经验、应用hermes学习、同步hermes知识、hermes最佳实践、hermes学习材料
+version: 4.1.0
 ---
 
 # Hermes 学习材料同步技能
@@ -10,6 +11,7 @@ trigger_words: 学习hermes经验、应用hermes学习、同步hermes知识、he
 
 ## 版本历史
 
+- **v4.1 (2026-04-20)**: 同步 Hermes 生成器 v3.6（评分 9.0+）；悬空助词 100% 消除；词汇边界截断优化；rule_id 唯一性机制完善；专有名词规范化（Hermes Agent / WorkBuddy Agent）
 - **v4 (2026-04-18)**: 修复 evolution.db 路径（全局路径）、移除无效 batch_size 自增、完善反馈数据结构
 - **v3**: 双向反馈闭环、evolution.db 集成、概念关联
 - **v2**: 策略库 + 效果追踪
