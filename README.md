@@ -1,5 +1,10 @@
 # WorkBuddy AI Evolution Stack
 
+[![GitHub stars](https://img.shields.io/github/stars/liuboacean/workbuddy-evolution-stack?style=social)](https://github.com/liuboacean/workbuddy-evolution-stack/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/liuboacean/workbuddy-evolution-stack?style=social)](https://github.com/liuboacean/workbuddy-evolution-stack/network/members)
+[![MIT License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+
 让 WorkBuddy 具备自我进化和跨 Agent 记忆互通能力的技术栈。
 
 ## 包含项目
